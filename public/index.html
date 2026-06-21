@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>Cuadro de Padel · MARTOKEN</title>
+<link rel="icon" href="data:,">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.383.0/umd/lucide.min.js" crossorigin></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+  body { margin: 0; background: #0F1A14; }
+  .font-display { font-family: 'Archivo Black', sans-serif; }
+  .font-mono { font-family: 'JetBrains Mono', monospace; }
+  ::-webkit-scrollbar { height: 0; width: 6px; }
+  ::-webkit-scrollbar-thumb { background: #2A3B2E; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback } = React;
+const {
+  Plus, Trash2, Trophy, ArrowUpCircle, Shuffle, Users, Clock, X, ChevronRight, Check, Loader2, WifiOff
+} = lucideReact;
+
+const CATEGORIAS = ['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'];
+const API = '/api';
+
+// ---------- Utilidades de bracket (mismo algoritmo de seeding) ----------
+function proximaPotenciaDeDos(n) {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
+
+function nombreRonda(numParejasEnRonda) {
+  switch (numParejasEnRonda) {
+    case 2: return 'Final';
+    case 4: return 'Semifinal';
+    case 8: return 'Cuartos de Final';
+    case 16: return 'Octavos de Final';
+    case 32: return 'Dieciseisavos de Final';
+    default: return `Ronda previa (${numParejasEnRonda})`;
+  }
+}
+
+function seedOrder(size) {
+  if (size === 1) return [0];
+  if (size === 2) return [0, 1];
+  let prev = [0, 1];
+  let n = 2;
+  while (n < size) {
+    const next = [];
+    const total = n * 2;
+    for (const p of prev) {
+      next.push(p);
+      next.push(total - 1 - p);
+    }
+    prev = next;
+    n = total;
+  }
+  return prev;
+}
+
+function shuffle(arr) {
+  const copia = [...arr];
+  for (let i = copia.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copia[i], copia[j]] = [copia[j], copia[i]];
+  }
+  return copia;
+}
+
+function generarCuadro(parejas) {
+  const n = parejas.length;
+  if (n < 2) return [];
+  const size = proximaPotenciaDeDos(n);
+  const byes = size - n;
+  const slots = new Array(size).fill(null);
+  let idxPareja = 0;
+  const orden = seedOrder(size);
+  for (let i = 0; i < size; i++) {
+    const pos = orden[i];
+    if (i < byes) slots[pos] = null;
+    else slots[pos] = parejas[idxPareja++];
+  }
+
+  const rondas = [];
+  let actual = slots;
+  let rondaNum = 0;
+  while (actual.length >= 2) {
+    const partidos = [];
+    for (let i = 0; i < actual.length; i += 2) {
+      const a = actual[i];
+      const b = actual[i + 1];
+      let ganadorAuto = null;
+      if (a && !b) ganadorAuto = a;
+      if (b && !a) ganadorAuto = b;
+      partidos.push({
+        id: `r${rondaNum}-p${i / 2}`,
+        parejaA: a,
+        parejaB: b,
+        ganador: ganadorAuto,
+        horario: '',
+        cancha: '',
+        marcador: '',
+      });
+    }
+    rondas.push({ nombre: nombreRonda(actual.length), partidos });
+    actual = partidos.map(p => p.ganador);
+    rondaNum++;
+  }
+  return rondas;
+}
+
+function propagarGanadores(rondas) {
+  const nuevasRondas = rondas.map(r => ({ ...r, partidos: r.partidos.map(p => ({ ...p })) }));
+  for (let i = 0; i < nuevasRondas.length - 1; i++) {
+    const actual = nuevasRondas[i].partidos;
+    const siguiente = nuevasRondas[i + 1].partidos;
+    for (let j = 0; j < siguiente.length; j++) {
+      const a = actual[2 * j]?.ganador || null;
+      const b = actual[2 * j + 1]?.ganador || null;
+      siguiente[j].parejaA = a;
+      siguiente[j].parejaB = b;
+      const idA = a ? a.id : null;
+      const idB = b ? b.id : null;
+      const ganadorId = siguiente[j].ganador ? siguiente[j].ganador.id : null;
+      const sigueValido = (ganadorId === idA && a) || (ganadorId === idB && b);
+      if (!sigueValido) {
+        if (a && !b) siguiente[j].ganador = a;
+        else if (b && !a) siguiente[j].ganador = b;
+        else siguiente[j].ganador = null;
+        siguiente[j].marcador = '';
+      }
+    }
+  }
+  return nuevasRondas;
+}
+
+function nombrePareja(p) {
+  if (!p) return null;
+  return p.nombre1 + (p.nombre2 ? ` / ${p.nombre2}` : '');
+}
+
+// ---------- API helpers ----------
+async function apiGet(url) {
+  const r = await fetch(API + url);
+  if (!r.ok) throw new Error('Error de red');
+  return r.json();
+}
+async function apiPost(url, body) {
+  const r = await fetch(API + url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error('Error de red');
+  return r.json();
+}
+async function apiPut(url, body) {
+  const r = await fetch(API + url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error('Error de red');
+  return r.json();
+}
+async function apiDelete(url) {
+  const r = await fetch(API + url, { method: 'DELETE' });
+  if (!r.ok) throw new Error('Error de red');
+  return r.json();
+}
+
+function TorneoPadel() {
+  const [parejasPorCategoria, setParejasPorCategoria] = useState(null);
+  const [cuadrosCache, setCuadrosCache] = useState({});
+  const [categoriaActiva, setCategoriaActiva] = useState('4ta');
+  const [vista, setVista] = useState('participantes');
+  const [cargando, setCargando] = useState(true);
+  const [errorConexion, setErrorConexion] = useState(false);
+  const [modalAscenso, setModalAscenso] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const [jugador1, setJugador1] = useState('');
+  const [jugador2, setJugador2] = useState('');
+  const [horarioPref, setHorarioPref] = useState('');
+
+  const mostrarToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2200); };
+
+  const cargarParejas = useCallback(async () => {
+    try {
+      const data = await apiGet('/parejas');
+      setParejasPorCategoria(data);
+      setErrorConexion(false);
+    } catch (e) {
+      setErrorConexion(true);
+    }
+  }, []);
+
+  const cargarCuadro = useCallback(async (categoria) => {
+    try {
+      const data = await apiGet(`/cuadros/${categoria}`);
+      setCuadrosCache(prev => ({ ...prev, [categoria]: data.rondas || [] }));
+    } catch (e) {
+      setErrorConexion(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      setCargando(true);
+      await cargarParejas();
+      await cargarCuadro(categoriaActiva);
+      setCargando(false);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!cargando) cargarCuadro(categoriaActiva);
+  }, [categoriaActiva]);
+
+  if (cargando || !parejasPorCategoria) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0F1A14]">
+        <div className="flex items-center gap-2 text-[#E8E2D4] font-mono text-sm tracking-widest">
+          <Loader2 className="animate-spin" size={16} /> CARGANDO TORNEO...
+        </div>
+      </div>
+    );
+  }
+
+  const parejas = parejasPorCategoria[categoriaActiva] || [];
+  const cuadro = cuadrosCache[categoriaActiva] || [];
+
+  async function agregarPareja() {
+    if (!jugador1.trim()) { mostrarToast('Falta el nombre del jugador/a 1'); return; }
+    try {
+      await apiPost('/parejas', { categoria: categoriaActiva, nombre1: jugador1, nombre2: jugador2, horario: horarioPref });
+      setJugador1(''); setJugador2(''); setHorarioPref('');
+      await cargarParejas();
+      mostrarToast('Pareja agregada');
+    } catch (e) { mostrarToast('No se pudo guardar. Revisá la conexión.'); }
+  }
+
+  async function eliminarPareja(id) {
+    try {
+      await apiDelete(`/parejas/${id}`);
+      await cargarParejas();
+    } catch (e) { mostrarToast('No se pudo eliminar.'); }
+  }
+
+  async function sortearCuadro() {
+    if (parejas.length < 2) { mostrarToast('Necesitás al menos 2 parejas para sortear'); return; }
+    const mezcladas = shuffle(parejas);
+    const nuevasRondas = generarCuadro(mezcladas);
+    try {
+      await apiPut(`/cuadros/${categoriaActiva}`, { rondas: nuevasRondas });
+      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: nuevasRondas }));
+      setVista('cuadro');
+      mostrarToast('Cuadro sorteado');
+    } catch (e) { mostrarToast('No se pudo guardar el cuadro.'); }
+  }
+
+  async function actualizarPartido(rondaIdx, partidoIdx, cambios) {
+    const cuadroNuevo = cuadro.map((r, i) =>
+      i === rondaIdx ? { ...r, partidos: r.partidos.map((p, j) => (j === partidoIdx ? { ...p, ...cambios } : p)) } : r
+    );
+    const propagado = propagarGanadores(cuadroNuevo);
+    setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: propagado }));
+    try {
+      await apiPut(`/cuadros/${categoriaActiva}`, { rondas: propagado });
+    } catch (e) { mostrarToast('No se pudo guardar el cambio.'); }
+  }
+
+  async function ascenderPareja(pareja, categoriaDestino) {
+    try {
+      await apiPost(`/parejas/${pareja.id}/ascender`, { categoriaDestino });
+      await cargarParejas();
+      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: [] }));
+      setModalAscenso(null);
+      mostrarToast(`Ascendida a ${categoriaDestino}`);
+    } catch (e) { mostrarToast('No se pudo ascender la pareja.'); }
+  }
+
+  const indexCategoria = CATEGORIAS.indexOf(categoriaActiva);
+  const categoriaSuperior = indexCategoria < CATEGORIAS.length - 1 ? CATEGORIAS[indexCategoria + 1] : null;
+
+  return (
+    <div className="min-h-screen bg-[#0F1A14] text-[#E8E2D4]" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <header className="border-b border-[#2A3B2E] sticky top-0 bg-[#0F1A14]/95 backdrop-blur z-20">
+        <div className="px-4 py-4">
+          <div className="flex items-center gap-2 mb-1">
+            <div className={`w-2 h-2 rounded-full ${errorConexion ? 'bg-red-400' : 'bg-[#C8FF4D]'}`} />
+            <span className="font-mono text-[10px] tracking-[0.25em] text-[#8FA88F] uppercase">
+              {errorConexion ? 'Sin conexión al servidor' : 'Torneo en vivo'}
+            </span>
+          </div>
+          <h1 className="font-display text-2xl leading-none tracking-tight">CUADRO&nbsp;DE&nbsp;PADEL</h1>
+        </div>
+        <div className="flex overflow-x-auto px-4 pb-3 gap-1.5">
+          {CATEGORIAS.map(cat => {
+            const count = (parejasPorCategoria[cat] || []).length;
+            const activo = cat === categoriaActiva;
+            return (
+              <button key={cat} onClick={() => { setCategoriaActiva(cat); setVista('participantes'); }}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-sm font-semibold transition-colors border ${activo ? 'bg-[#C8FF4D] text-[#0F1A14] border-[#C8FF4D]' : 'bg-transparent text-[#8FA88F] border-[#2A3B2E]'}`}>
+                {cat}{count > 0 && <span className="ml-1.5 opacity-70 font-mono text-xs">{count}</span>}
+              </button>
+            );
+          })}
+        </div>
+      </header>
+
+      <div className="flex px-4 pt-3 gap-4 border-b border-[#2A3B2E]">
+        {[{ id: 'participantes', label: 'Participantes', icon: Users }, { id: 'cuadro', label: 'Cuadro', icon: Trophy }].map(t => (
+          <button key={t.id} onClick={() => setVista(t.id)}
+            className={`flex items-center gap-1.5 pb-2.5 text-sm font-medium border-b-2 transition-colors ${vista === t.id ? 'border-[#C8FF4D] text-[#E8E2D4]' : 'border-transparent text-[#5C6E5E]'}`}>
+            <t.icon size={14} />{t.label}
+          </button>
+        ))}
+      </div>
+
+      <main className="px-4 py-5 max-w-2xl mx-auto">
+        {vista === 'participantes' && (
+          <ParticipantesView
+            categoriaActiva={categoriaActiva} parejas={parejas}
+            jugador1={jugador1} setJugador1={setJugador1}
+            jugador2={jugador2} setJugador2={setJugador2}
+            horarioPref={horarioPref} setHorarioPref={setHorarioPref}
+            agregarPareja={agregarPareja} eliminarPareja={eliminarPareja}
+            sortearCuadro={sortearCuadro} categoriaSuperior={categoriaSuperior}
+            abrirAscenso={(p) => setModalAscenso(p)} tieneCuadro={cuadro.length > 0}
+          />
+        )}
+        {vista === 'cuadro' && (
+          <CuadroView cuadro={cuadro} categoriaActiva={categoriaActiva}
+            actualizarPartido={actualizarPartido} sortearCuadro={sortearCuadro} />
+        )}
+      </main>
+
+      {modalAscenso && (
+        <ModalAscenso pareja={modalAscenso} categoriaActual={categoriaActiva} categoriaSuperior={categoriaSuperior}
+          onConfirmar={(destino) => ascenderPareja(modalAscenso, destino)} onCerrar={() => setModalAscenso(null)} />
+      )}
+
+      {toast && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-[#C8FF4D] text-[#0F1A14] text-sm font-semibold px-4 py-2 rounded-full shadow-lg z-50">
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ParticipantesView({ categoriaActiva, parejas, jugador1, setJugador1, jugador2, setJugador2, horarioPref, setHorarioPref, agregarPareja, eliminarPareja, sortearCuadro, categoriaSuperior, abrirAscenso, tieneCuadro }) {
+  return (
+    <div className="space-y-5">
+      <div className="bg-[#152319] border border-[#2A3B2E] rounded-2xl p-4">
+        <div className="text-xs font-mono tracking-widest text-[#8FA88F] uppercase mb-3">Agregar pareja · {categoriaActiva}</div>
+        <div className="space-y-2.5">
+          <input value={jugador1} onChange={e => setJugador1(e.target.value)} placeholder="Nombre y apellido — jugador/a 1"
+            className="w-full bg-[#0F1A14] border border-[#2A3B2E] rounded-xl px-3.5 py-2.5 text-sm placeholder:text-[#5C6E5E] focus:outline-none focus:border-[#C8FF4D]" />
+          <input value={jugador2} onChange={e => setJugador2(e.target.value)} placeholder="Nombre y apellido — jugador/a 2 (opcional)"
+            className="w-full bg-[#0F1A14] border border-[#2A3B2E] rounded-xl px-3.5 py-2.5 text-sm placeholder:text-[#5C6E5E] focus:outline-none focus:border-[#C8FF4D]" />
+          <input value={horarioPref} onChange={e => setHorarioPref(e.target.value)} placeholder="Horario u observación (opcional)"
+            className="w-full bg-[#0F1A14] border border-[#2A3B2E] rounded-xl px-3.5 py-2.5 text-sm placeholder:text-[#5C6E5E] focus:outline-none focus:border-[#C8FF4D]" />
+          <button onClick={agregarPareja} className="w-full flex items-center justify-center gap-1.5 bg-[#C8FF4D] text-[#0F1A14] font-semibold rounded-xl py-2.5 text-sm active:scale-[0.98] transition-transform">
+            <Plus size={16} /> Agregar
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2.5">
+          <span className="text-xs font-mono tracking-widest text-[#8FA88F] uppercase">Anotados ({parejas.length})</span>
+          {tieneCuadro && <span className="text-[10px] font-mono text-[#C8FF4D]/70 uppercase">Cuadro sorteado</span>}
+        </div>
+        {parejas.length === 0 ? (
+          <div className="text-center py-10 text-[#5C6E5E] text-sm border border-dashed border-[#2A3B2E] rounded-2xl">
+            Todavía no hay parejas en {categoriaActiva}.<br />Agregá la primera arriba.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {parejas.map((p, idx) => (
+              <div key={p.id} className="flex items-center gap-3 bg-[#152319] border border-[#2A3B2E] rounded-xl px-3.5 py-3">
+                <span className="font-mono text-xs text-[#5C6E5E] w-5 shrink-0">{String(idx + 1).padStart(2, '0')}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate">{p.nombre1}{p.nombre2 ? ` / ${p.nombre2}` : ''}</div>
+                  {p.horario && <div className="flex items-center gap-1 text-[11px] text-[#8FA88F] mt-0.5"><Clock size={10} /> {p.horario}</div>}
+                </div>
+                {categoriaSuperior && (
+                  <button onClick={() => abrirAscenso(p)} title={`Ascender a ${categoriaSuperior}`} className="text-[#8FA88F] hover:text-[#C8FF4D] p-1.5 shrink-0">
+                    <ArrowUpCircle size={18} />
+                  </button>
+                )}
+                <button onClick={() => eliminarPareja(p.id)} className="text-[#5C6E5E] hover:text-red-400 p-1.5 shrink-0"><Trash2 size={16} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {parejas.length >= 2 && (
+        <button onClick={sortearCuadro} className="w-full flex items-center justify-center gap-2 bg-[#152319] border border-[#C8FF4D]/40 text-[#C8FF4D] font-semibold rounded-xl py-3 text-sm active:scale-[0.98] transition-transform">
+          <Shuffle size={16} /> {tieneCuadro ? 'Volver a sortear cuadro' : 'Sortear cuadro'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CuadroView({ cuadro, categoriaActiva, actualizarPartido, sortearCuadro }) {
+  if (!cuadro || cuadro.length === 0) {
+    return (
+      <div className="text-center py-16 text-[#5C6E5E] text-sm">
+        <Trophy className="mx-auto mb-3 text-[#2A3B2E]" size={32} />
+        Todavía no sorteaste el cuadro de {categoriaActiva}.<br />Volvé a "Participantes" y tocá "Sortear cuadro".
+      </div>
+    );
+  }
+  const campeon = cuadro[cuadro.length - 1]?.partidos?.[0]?.ganador;
+  return (
+    <div className="space-y-6 overflow-x-auto pb-4">
+      {campeon && (
+        <div className="flex items-center gap-3 bg-gradient-to-r from-[#C8FF4D]/15 to-transparent border border-[#C8FF4D]/30 rounded-2xl px-4 py-3.5">
+          <Trophy size={22} className="text-[#C8FF4D] shrink-0" />
+          <div>
+            <div className="text-[10px] font-mono tracking-widest text-[#C8FF4D]/80 uppercase">Campeón {categoriaActiva}</div>
+            <div className="font-semibold text-sm">{nombrePareja(campeon)}</div>
+          </div>
+        </div>
+      )}
+      {cuadro.map((ronda, rIdx) => (
+        <div key={rIdx}>
+          <div className="text-xs font-mono tracking-widest text-[#8FA88F] uppercase mb-2.5 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#C8FF4D]" />{ronda.nombre}
+          </div>
+          <div className="space-y-2.5">
+            {ronda.partidos.map((partido, pIdx) => (
+              <PartidoCard key={partido.id} partido={partido} onChange={(cambios) => actualizarPartido(rIdx, pIdx, cambios)} />
+            ))}
+          </div>
+        </div>
+      ))}
+      <button onClick={sortearCuadro} className="w-full flex items-center justify-center gap-2 bg-[#152319] border border-[#2A3B2E] text-[#8FA88F] rounded-xl py-2.5 text-xs font-medium">
+        <Shuffle size={14} /> Volver a sortear desde cero
+      </button>
+    </div>
+  );
+}
+
+function PartidoCard({ partido, onChange }) {
+  const { parejaA, parejaB, ganador, horario, cancha, marcador } = partido;
+  const esByeA = parejaA && !parejaB;
+  const esByeB = parejaB && !parejaA;
+  const ambasDefinidas = parejaA && parejaB;
+  const [editando, setEditando] = useState(false);
+  const [marcadorTmp, setMarcadorTmp] = useState(marcador || '');
+
+  function elegirGanador(p) { onChange({ ganador: p }); }
+  const ganadorId = ganador ? ganador.id : null;
+
+  return (
+    <div className="bg-[#152319] border border-[#2A3B2E] rounded-xl overflow-hidden">
+      <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-1">
+        <input value={horario} onChange={e => onChange({ horario: e.target.value })} placeholder="Horario"
+          className="bg-transparent text-[11px] font-mono text-[#8FA88F] placeholder:text-[#3D4F40] focus:outline-none focus:text-[#E8E2D4] w-20" />
+        <span className="text-[#2A3B2E]">·</span>
+        <input value={cancha} onChange={e => onChange({ cancha: e.target.value })} placeholder="Cancha"
+          className="bg-transparent text-[11px] font-mono text-[#8FA88F] placeholder:text-[#3D4F40] focus:outline-none focus:text-[#E8E2D4] w-20" />
+      </div>
+      <div className="px-3.5 pb-3 space-y-1">
+        <FilaPareja pareja={parejaA} esGanador={ganadorId === (parejaA && parejaA.id)} esBye={esByeA} puedeElegir={ambasDefinidas} onElegir={() => elegirGanador(parejaA)} />
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-px bg-[#2A3B2E]" /><span className="text-[9px] font-mono text-[#3D4F40]">VS</span><div className="flex-1 h-px bg-[#2A3B2E]" />
+        </div>
+        <FilaPareja pareja={parejaB} esGanador={ganadorId === (parejaB && parejaB.id)} esBye={esByeB} puedeElegir={ambasDefinidas} onElegir={() => elegirGanador(parejaB)} />
+      </div>
+      {ambasDefinidas && (
+        <div className="border-t border-[#2A3B2E] px-3.5 py-2">
+          {editando ? (
+            <div className="flex gap-2">
+              <input autoFocus value={marcadorTmp} onChange={e => setMarcadorTmp(e.target.value)} placeholder="Ej: 6-3 / 6-4"
+                className="flex-1 bg-[#0F1A14] border border-[#2A3B2E] rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-[#C8FF4D]" />
+              <button onClick={() => { onChange({ marcador: marcadorTmp }); setEditando(false); }} className="bg-[#C8FF4D] text-[#0F1A14] rounded-lg px-3 text-xs font-semibold">
+                <Check size={14} />
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => setEditando(true)} className="text-[11px] font-mono text-[#5C6E5E] hover:text-[#8FA88F]">
+              {marcador ? `Resultado: ${marcador}` : '+ Cargar resultado'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilaPareja({ pareja, esGanador, esBye, puedeElegir, onElegir }) {
+  if (!pareja) return <div className="flex items-center px-2.5 py-2 rounded-lg text-[#3D4F40] text-sm italic">— por definir —</div>;
+  return (
+    <button onClick={puedeElegir ? onElegir : undefined} disabled={!puedeElegir}
+      className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-sm transition-colors ${esGanador ? 'bg-[#C8FF4D]/15 text-[#C8FF4D] font-semibold' : puedeElegir ? 'text-[#E8E2D4] hover:bg-[#1C2B20]' : 'text-[#E8E2D4]'}`}>
+      <span className="truncate text-left">{nombrePareja(pareja)}</span>
+      {esBye && <span className="text-[9px] font-mono text-[#5C6E5E] shrink-0 ml-2">BYE</span>}
+      {esGanador && !esBye && <ChevronRight size={14} className="shrink-0 ml-2" />}
+    </button>
+  );
+}
+
+function ModalAscenso({ pareja, categoriaActual, categoriaSuperior, onConfirmar, onCerrar }) {
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onCerrar}>
+      <div onClick={e => e.stopPropagation()} className="bg-[#152319] border border-[#2A3B2E] rounded-2xl p-5 w-full max-w-sm">
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <ArrowUpCircle size={18} className="text-[#C8FF4D]" />
+            <span className="font-display text-sm">ASCENSO DE CATEGORÍA</span>
+          </div>
+          <button onClick={onCerrar} className="text-[#5C6E5E]"><X size={18} /></button>
+        </div>
+        <p className="text-sm text-[#8FA88F] mb-1">{pareja.nombre1}{pareja.nombre2 ? ` / ${pareja.nombre2}` : ''}</p>
+        <p className="text-xs text-[#5C6E5E] mb-4">
+          Pasa de <span className="text-[#E8E2D4]">{categoriaActual}</span> a <span className="text-[#C8FF4D]">{categoriaSuperior}</span>. Se quita del cuadro actual de {categoriaActual}.
+        </p>
+        <div className="flex gap-2">
+          <button onClick={onCerrar} className="flex-1 border border-[#2A3B2E] text-[#8FA88F] rounded-xl py-2.5 text-sm font-medium">Cancelar</button>
+          <button onClick={() => onConfirmar(categoriaSuperior)} className="flex-1 bg-[#C8FF4D] text-[#0F1A14] rounded-xl py-2.5 text-sm font-semibold">Confirmar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<TorneoPadel />);
+</script>
+</body>
+</html>
