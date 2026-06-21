@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8" />
@@ -22,7 +22,7 @@
 <body>
 <div id="root"></div>
 
-<script type="text/babel" data-presets="react">
+<script type="text/babel" data-presets="env,react" data-plugins="transform-modules-commonjs">
 const { useState, useEffect, useCallback } = React;
 const {
   Plus, Trash2, Trophy, ArrowUpCircle, Shuffle, Users, Clock, X, ChevronRight, Check, Loader2, WifiOff
@@ -465,75 +465,4 @@ function PartidoCard({ partido, onChange }) {
         <input value={horario} onChange={e => onChange({ horario: e.target.value })} placeholder="Horario"
           className="bg-transparent text-[11px] font-mono text-[#8FA88F] placeholder:text-[#3D4F40] focus:outline-none focus:text-[#E8E2D4] w-20" />
         <span className="text-[#2A3B2E]">·</span>
-        <input value={cancha} onChange={e => onChange({ cancha: e.target.value })} placeholder="Cancha"
-          className="bg-transparent text-[11px] font-mono text-[#8FA88F] placeholder:text-[#3D4F40] focus:outline-none focus:text-[#E8E2D4] w-20" />
-      </div>
-      <div className="px-3.5 pb-3 space-y-1">
-        <FilaPareja pareja={parejaA} esGanador={ganadorId === (parejaA && parejaA.id)} esBye={esByeA} puedeElegir={ambasDefinidas} onElegir={() => elegirGanador(parejaA)} />
-        <div className="flex items-center gap-2">
-          <div className="flex-1 h-px bg-[#2A3B2E]" /><span className="text-[9px] font-mono text-[#3D4F40]">VS</span><div className="flex-1 h-px bg-[#2A3B2E]" />
-        </div>
-        <FilaPareja pareja={parejaB} esGanador={ganadorId === (parejaB && parejaB.id)} esBye={esByeB} puedeElegir={ambasDefinidas} onElegir={() => elegirGanador(parejaB)} />
-      </div>
-      {ambasDefinidas && (
-        <div className="border-t border-[#2A3B2E] px-3.5 py-2">
-          {editando ? (
-            <div className="flex gap-2">
-              <input autoFocus value={marcadorTmp} onChange={e => setMarcadorTmp(e.target.value)} placeholder="Ej: 6-3 / 6-4"
-                className="flex-1 bg-[#0F1A14] border border-[#2A3B2E] rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-[#C8FF4D]" />
-              <button onClick={() => { onChange({ marcador: marcadorTmp }); setEditando(false); }} className="bg-[#C8FF4D] text-[#0F1A14] rounded-lg px-3 text-xs font-semibold">
-                <Check size={14} />
-              </button>
-            </div>
-          ) : (
-            <button onClick={() => setEditando(true)} className="text-[11px] font-mono text-[#5C6E5E] hover:text-[#8FA88F]">
-              {marcador ? `Resultado: ${marcador}` : '+ Cargar resultado'}
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function FilaPareja({ pareja, esGanador, esBye, puedeElegir, onElegir }) {
-  if (!pareja) return <div className="flex items-center px-2.5 py-2 rounded-lg text-[#3D4F40] text-sm italic">— por definir —</div>;
-  return (
-    <button onClick={puedeElegir ? onElegir : undefined} disabled={!puedeElegir}
-      className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-sm transition-colors ${esGanador ? 'bg-[#C8FF4D]/15 text-[#C8FF4D] font-semibold' : puedeElegir ? 'text-[#E8E2D4] hover:bg-[#1C2B20]' : 'text-[#E8E2D4]'}`}>
-      <span className="truncate text-left">{nombrePareja(pareja)}</span>
-      {esBye && <span className="text-[9px] font-mono text-[#5C6E5E] shrink-0 ml-2">BYE</span>}
-      {esGanador && !esBye && <ChevronRight size={14} className="shrink-0 ml-2" />}
-    </button>
-  );
-}
-
-function ModalAscenso({ pareja, categoriaActual, categoriaSuperior, onConfirmar, onCerrar }) {
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onCerrar}>
-      <div onClick={e => e.stopPropagation()} className="bg-[#152319] border border-[#2A3B2E] rounded-2xl p-5 w-full max-w-sm">
-        <div className="flex items-start justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <ArrowUpCircle size={18} className="text-[#C8FF4D]" />
-            <span className="font-display text-sm">ASCENSO DE CATEGORÍA</span>
-          </div>
-          <button onClick={onCerrar} className="text-[#5C6E5E]"><X size={18} /></button>
-        </div>
-        <p className="text-sm text-[#8FA88F] mb-1">{pareja.nombre1}{pareja.nombre2 ? ` / ${pareja.nombre2}` : ''}</p>
-        <p className="text-xs text-[#5C6E5E] mb-4">
-          Pasa de <span className="text-[#E8E2D4]">{categoriaActual}</span> a <span className="text-[#C8FF4D]">{categoriaSuperior}</span>. Se quita del cuadro actual de {categoriaActual}.
-        </p>
-        <div className="flex gap-2">
-          <button onClick={onCerrar} className="flex-1 border border-[#2A3B2E] text-[#8FA88F] rounded-xl py-2.5 text-sm font-medium">Cancelar</button>
-          <button onClick={() => onConfirmar(categoriaSuperior)} className="flex-1 bg-[#C8FF4D] text-[#0F1A14] rounded-xl py-2.5 text-sm font-semibold">Confirmar</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<TorneoPadel />);
-</script>
-</body>
-</html>
+        <input value={cancha}
