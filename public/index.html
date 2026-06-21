@@ -7,8 +7,7 @@
 <link rel="icon" href="data:,">
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.383.0/umd/lucide.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js" crossorigin></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
@@ -22,11 +21,30 @@
 <body>
 <div id="root"></div>
 
-<script type="text/babel" data-presets="env,react" data-plugins="transform-modules-commonjs">
+<script type="text/babel" data-presets="react">
 const { useState, useEffect, useCallback } = React;
-const {
-  Plus, Trash2, Trophy, ArrowUpCircle, Shuffle, Users, Clock, X, ChevronRight, Check, Loader2, WifiOff
-} = lucideReact;
+
+// Íconos propios (sin dependencia externa) — cada uno acepta prop size opcional
+function mkIcon(emoji) {
+  return function Icon({ size = 16, className = '' }) {
+    return React.createElement('span', {
+      className,
+      style: { fontSize: (size) + 'px', lineHeight: 1, display: 'inline-block' }
+    }, emoji);
+  };
+}
+const Plus = mkIcon('＋');
+const Trash2 = mkIcon('🗑');
+const Trophy = mkIcon('🏆');
+const ArrowUpCircle = mkIcon('⬆');
+const Shuffle = mkIcon('🔀');
+const Users = mkIcon('👥');
+const Clock = mkIcon('🕒');
+const X = mkIcon('✕');
+const ChevronRight = mkIcon('›');
+const Check = mkIcon('✓');
+const Loader2 = mkIcon('⟳');
+const WifiOff = mkIcon('⚠');
 
 const CATEGORIAS = ['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'];
 const API = '/api';
