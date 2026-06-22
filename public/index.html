@@ -49,7 +49,7 @@ const WifiOff = mkIcon('⚠');
 const Download = mkIcon('⬇');
 const Settings = mkIcon('⚙');
 
-const CATEGORIAS = ['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'];
+const CATEGORIAS = ['15', '14', '13', '12', '11', '10', '9', '8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'];
 const API = '/api';
 
 // ---------- Utilidades de bracket (mismo algoritmo de seeding) ----------
@@ -180,10 +180,10 @@ function generarGrupos(parejas) {
       nombre: `Grupo ${String.fromCharCode(65 + i / 4)}`,
       integrantes: [a, b, c, d],
       partidos: [
-        { id: `g${i / 4}-p0`, parejaA: a, parejaB: b, marcador: '', horario: '', cancha: '', gamesA: null, gamesB: null },
-        { id: `g${i / 4}-p1`, parejaA: c, parejaB: d, marcador: '', horario: '', cancha: '', gamesA: null, gamesB: null },
-        { id: `g${i / 4}-p2`, parejaA: a, parejaB: c, marcador: '', horario: '', cancha: '', gamesA: null, gamesB: null },
-        { id: `g${i / 4}-p3`, parejaA: b, parejaB: d, marcador: '', horario: '', cancha: '', gamesA: null, gamesB: null },
+        { id: `g${i / 4}-p0`, parejaA: a, parejaB: b, horario: '', cancha: '', sets: [{ a: '', b: '' }, { a: '', b: '' }, { a: '', b: '' }] },
+        { id: `g${i / 4}-p1`, parejaA: c, parejaB: d, horario: '', cancha: '', sets: [{ a: '', b: '' }, { a: '', b: '' }, { a: '', b: '' }] },
+        { id: `g${i / 4}-p2`, parejaA: a, parejaB: c, horario: '', cancha: '', sets: [{ a: '', b: '' }, { a: '', b: '' }, { a: '', b: '' }] },
+        { id: `g${i / 4}-p3`, parejaA: b, parejaB: d, horario: '', cancha: '', sets: [{ a: '', b: '' }, { a: '', b: '' }, { a: '', b: '' }] },
       ],
     });
   }
@@ -191,37 +191,56 @@ function generarGrupos(parejas) {
 }
 
 // Calcula la tabla de posiciones de un grupo a partir de sus partidos jugados
+// Calcula quién ganó un partido a partir de sus sets: [{a,b}, {a,b}, {a,b}] (tercero opcional)
+// Devuelve { setsA, setsB, ganador: 'A'|'B'|null }
+function calcularResultadoSets(sets) {
+  const jugados = (sets || []).filter(s => s && s.a != null && s.b != null && s.a !== '' && s.b !== '');
+  if (jugados.length === 0) return { setsA: 0, setsB: 0, ganador: null, jugados: 0 };
+  let setsA = 0, setsB = 0;
+  jugados.forEach(s => {
+    const a = Number(s.a), b = Number(s.b);
+    if (a > b) setsA++;
+    else if (b > a) setsB++;
+  });
+  let ganador = null;
+  if (setsA > setsB) ganador = 'A';
+  else if (setsB > setsA) ganador = 'B';
+  return { setsA, setsB, ganador, jugados: jugados.length };
+}
+
 function calcularTablaGrupo(grupo) {
   const stats = {};
   grupo.integrantes.forEach(p => {
-    stats[p.id] = { pareja: p, victorias: 0, gamesGanados: 0, gamesPerdidos: 0, jugados: 0 };
+    stats[p.id] = { pareja: p, victorias: 0, setsGanados: 0, setsPerdidos: 0, jugados: 0 };
   });
   grupo.partidos.forEach(partido => {
-    const { parejaA, parejaB, gamesA, gamesB } = partido;
-    if (gamesA == null || gamesB == null || !parejaA || !parejaB) return;
+    const { parejaA, parejaB, sets } = partido;
+    if (!parejaA || !parejaB) return;
+    const { setsA, setsB, ganador, jugados } = calcularResultadoSets(sets);
+    if (jugados === 0 || !ganador) return;
     stats[parejaA.id].jugados++;
     stats[parejaB.id].jugados++;
-    stats[parejaA.id].gamesGanados += gamesA;
-    stats[parejaA.id].gamesPerdidos += gamesB;
-    stats[parejaB.id].gamesGanados += gamesB;
-    stats[parejaB.id].gamesPerdidos += gamesA;
-    if (gamesA > gamesB) stats[parejaA.id].victorias++;
-    else if (gamesB > gamesA) stats[parejaB.id].victorias++;
+    stats[parejaA.id].setsGanados += setsA;
+    stats[parejaA.id].setsPerdidos += setsB;
+    stats[parejaB.id].setsGanados += setsB;
+    stats[parejaB.id].setsPerdidos += setsA;
+    if (ganador === 'A') stats[parejaA.id].victorias++;
+    else stats[parejaB.id].victorias++;
   });
   const tabla = Object.values(stats).map(s => ({
     ...s,
-    diferencia: s.gamesGanados - s.gamesPerdidos,
+    diferencia: s.setsGanados - s.setsPerdidos,
   }));
   tabla.sort((x, y) => {
     if (y.victorias !== x.victorias) return y.victorias - x.victorias;
     if (y.diferencia !== x.diferencia) return y.diferencia - x.diferencia;
-    return y.gamesGanados - x.gamesGanados;
+    return y.setsGanados - x.setsGanados;
   });
   return tabla;
 }
 
 function grupoCompleto(grupo) {
-  return grupo.partidos.every(p => p.gamesA != null && p.gamesB != null);
+  return grupo.partidos.every(p => calcularResultadoSets(p.sets).ganador != null);
 }
 
 // Arma el cuadro eliminatorio a partir de los clasificados (1° y 2° de cada grupo)
@@ -516,10 +535,12 @@ function descargarPdfGrupos(categoria, grupos) {
       doc.setFontSize(10.5);
       doc.text(nombreB, marginX + 2, y);
       y += 5;
-      if (partido.gamesA != null && partido.gamesB != null) {
+      const resultadoSets = calcularResultadoSets(partido.sets);
+      if (resultadoSets.jugados > 0) {
+        const textoSets = (partido.sets || []).filter(s => s && s.a !== '' && s.b !== '' && s.a != null && s.b != null).map(s => `${s.a}-${s.b}`).join('  /  ');
         doc.setFontSize(9);
         doc.setTextColor(60, 110, 60);
-        doc.text(`Resultado: ${partido.gamesA} - ${partido.gamesB}`, marginX + 2, y);
+        doc.text(`Resultado: ${textoSets}`, marginX + 2, y);
         doc.setTextColor(0, 0, 0);
         y += 5;
       }
@@ -1073,23 +1094,26 @@ function GruposView({ grupos, cuadroFinal, categoriaActiva, cantidadCanchas, act
 }
 
 function PartidoGrupoCard({ partido, cantidadCanchas, onChange }) {
-  const { parejaA, parejaB, horario, cancha, gamesA, gamesB } = partido;
+  const { parejaA, parejaB, horario, cancha, sets } = partido;
   const [editando, setEditando] = useState(false);
-  const [tmpA, setTmpA] = useState(gamesA != null ? String(gamesA) : '');
-  const [tmpB, setTmpB] = useState(gamesB != null ? String(gamesB) : '');
+  const setsActuales = sets && sets.length === 3 ? sets : [{ a: '', b: '' }, { a: '', b: '' }, { a: '', b: '' }];
+  const [tmpSets, setTmpSets] = useState(setsActuales.map(s => ({ a: s.a != null ? String(s.a) : '', b: s.b != null ? String(s.b) : '' })));
   const opcionesCancha = Array.from({ length: cantidadCanchas || 1 }, (_, i) => i + 1);
 
   function guardarResultado() {
-    const a = parseInt(tmpA, 10);
-    const b = parseInt(tmpB, 10);
-    if (Number.isNaN(a) || Number.isNaN(b)) return;
-    onChange({ gamesA: a, gamesB: b });
+    const setsLimpios = tmpSets.map(s => ({
+      a: s.a === '' ? '' : parseInt(s.a, 10),
+      b: s.b === '' ? '' : parseInt(s.b, 10),
+    }));
+    onChange({ sets: setsLimpios });
     setEditando(false);
   }
 
-  const hayResultado = gamesA != null && gamesB != null;
-  const ganoA = hayResultado && gamesA > gamesB;
-  const ganoB = hayResultado && gamesB > gamesA;
+  const resultado = calcularResultadoSets(setsActuales);
+  const hayResultado = resultado.jugados > 0;
+  const ganoA = resultado.ganador === 'A';
+  const ganoB = resultado.ganador === 'B';
+  const setsJugados = setsActuales.filter(s => s.a !== '' && s.b !== '' && s.a != null && s.b != null);
 
   return (
     <div className="bg-[#152319] border border-[#2A3B2E] rounded-xl overflow-hidden">
@@ -1108,31 +1132,46 @@ function PartidoGrupoCard({ partido, cantidadCanchas, onChange }) {
       <div className="px-3.5 pb-3 space-y-1">
         <div className={`flex items-center justify-between px-2.5 py-2 rounded-lg text-sm ${ganoA ? 'bg-[#C8FF4D]/15 text-[#C8FF4D] font-semibold' : 'text-[#E8E2D4]'}`}>
           <span className="truncate">{nombrePareja(parejaA)}</span>
-          {hayResultado && <span className="font-mono">{gamesA}</span>}
+          {hayResultado && (
+            <span className="font-mono text-xs flex gap-1.5 shrink-0 ml-2">
+              {setsJugados.map((s, i) => <span key={i}>{s.a}</span>)}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <div className="flex-1 h-px bg-[#2A3B2E]" /><span className="text-[9px] font-mono text-[#3D4F40]">VS</span><div className="flex-1 h-px bg-[#2A3B2E]" />
         </div>
         <div className={`flex items-center justify-between px-2.5 py-2 rounded-lg text-sm ${ganoB ? 'bg-[#C8FF4D]/15 text-[#C8FF4D] font-semibold' : 'text-[#E8E2D4]'}`}>
           <span className="truncate">{nombrePareja(parejaB)}</span>
-          {hayResultado && <span className="font-mono">{gamesB}</span>}
+          {hayResultado && (
+            <span className="font-mono text-xs flex gap-1.5 shrink-0 ml-2">
+              {setsJugados.map((s, i) => <span key={i}>{s.b}</span>)}
+            </span>
+          )}
         </div>
       </div>
       <div className="border-t border-[#2A3B2E] px-3.5 py-2">
         {editando ? (
-          <div className="flex items-center gap-2">
-            <input autoFocus type="number" value={tmpA} onChange={e => setTmpA(e.target.value)} placeholder="Games A"
-              className="w-16 bg-[#0F1A14] border border-[#2A3B2E] rounded-lg px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-[#C8FF4D]" />
-            <span className="text-[#5C6E5E] text-xs">-</span>
-            <input type="number" value={tmpB} onChange={e => setTmpB(e.target.value)} placeholder="Games B"
-              className="w-16 bg-[#0F1A14] border border-[#2A3B2E] rounded-lg px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-[#C8FF4D]" />
-            <button onClick={guardarResultado} className="bg-[#C8FF4D] text-[#0F1A14] rounded-lg px-3 py-1.5 text-xs font-semibold">
-              <Check size={14} />
+          <div className="space-y-2">
+            {[0, 1, 2].map(i => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-[#5C6E5E] w-12 shrink-0">Set {i + 1}{i === 2 ? ' (op.)' : ''}</span>
+                <input type="number" min="0" value={tmpSets[i].a}
+                  onChange={e => setTmpSets(prev => prev.map((s, idx) => idx === i ? { ...s, a: e.target.value } : s))}
+                  placeholder="—" className="w-14 bg-[#0F1A14] border border-[#2A3B2E] rounded-lg px-2 py-1.5 text-xs font-mono text-center focus:outline-none focus:border-[#C8FF4D]" />
+                <span className="text-[#5C6E5E] text-xs">-</span>
+                <input type="number" min="0" value={tmpSets[i].b}
+                  onChange={e => setTmpSets(prev => prev.map((s, idx) => idx === i ? { ...s, b: e.target.value } : s))}
+                  placeholder="—" className="w-14 bg-[#0F1A14] border border-[#2A3B2E] rounded-lg px-2 py-1.5 text-xs font-mono text-center focus:outline-none focus:border-[#C8FF4D]" />
+              </div>
+            ))}
+            <button onClick={guardarResultado} className="w-full bg-[#C8FF4D] text-[#0F1A14] rounded-lg py-2 text-xs font-semibold flex items-center justify-center gap-1.5">
+              <Check size={14} /> Guardar resultado
             </button>
           </div>
         ) : (
           <button onClick={() => setEditando(true)} className="text-[11px] font-mono text-[#5C6E5E] hover:text-[#8FA88F]">
-            {hayResultado ? `Resultado: ${gamesA} - ${gamesB}` : '+ Cargar resultado (games)'}
+            {hayResultado ? `Resultado: ${setsJugados.map(s => `${s.a}-${s.b}`).join('  /  ')}` : '+ Cargar resultado (hasta 3 sets)'}
           </button>
         )}
       </div>
