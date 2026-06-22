@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS cuadros (
   data TEXT NOT NULL,
   actualizado_en INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS config (
+  clave TEXT PRIMARY KEY,
+  valor TEXT NOT NULL
+);
 `);
 
 // ---------- Helpers ----------
@@ -101,18 +106,20 @@ app.post('/api/parejas/:id/ascender', (req, res) => {
 
 // ---------- API: Cuadros ----------
 
-// Obtener cuadro de una categoría
+// Obtener cuadro de una categoría (formato libre: el cliente decide la estructura interna)
 app.get('/api/cuadros/:categoria', (req, res) => {
   const row = db.prepare('SELECT * FROM cuadros WHERE categoria = ?').get(req.params.categoria);
   if (!row) return res.json({ categoria: req.params.categoria, rondas: [] });
-  res.json({ categoria: req.params.categoria, rondas: JSON.parse(row.data) });
+  const data = JSON.parse(row.data);
+  res.json({ categoria: req.params.categoria, ...data });
 });
 
-// Guardar/sortear cuadro de una categoría
+// Guardar/sortear cuadro de una categoría (acepta cualquier estructura JSON del cliente)
 app.put('/api/cuadros/:categoria', (req, res) => {
-  const { rondas } = req.body;
   const categoria = req.params.categoria;
-  const data = JSON.stringify(rondas || []);
+  // Guardamos todo el body tal cual (puede tener rondas, o tipo+grupos+cuadroFinal)
+  const { categoria: _omit, ...resto } = req.body || {};
+  const data = JSON.stringify(resto);
   const actualizado_en = Date.now();
   db.prepare(
     `INSERT INTO cuadros (categoria, data, actualizado_en) VALUES (?, ?, ?)
@@ -125,6 +132,22 @@ app.put('/api/cuadros/:categoria', (req, res) => {
 app.delete('/api/cuadros/:categoria', (req, res) => {
   db.prepare('DELETE FROM cuadros WHERE categoria = ?').run(req.params.categoria);
   res.json({ ok: true });
+});
+
+// ---------- API: Configuración general del club ----------
+app.get('/api/config', (req, res) => {
+  const row = db.prepare("SELECT valor FROM config WHERE clave = 'cantidadCanchas'").get();
+  res.json({ cantidadCanchas: row ? parseInt(row.valor, 10) : 1 });
+});
+
+app.put('/api/config', (req, res) => {
+  const { cantidadCanchas } = req.body;
+  const n = Math.max(1, Math.min(5, parseInt(cantidadCanchas, 10) || 1));
+  db.prepare(
+    `INSERT INTO config (clave, valor) VALUES ('cantidadCanchas', ?)
+     ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor`
+  ).run(String(n));
+  res.json({ cantidadCanchas: n });
 });
 
 // ---------- Salud (para Render / cron-job keep-alive) ----------
