@@ -3,12 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-<title>Cuadro de Padel · MARTOKEN</title>
+<title>Padel Torneos</title>
 <link rel="icon" href="data:,">
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js" crossorigin></script>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js" crossorigin></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
   body { margin: 0; background: #0F1A14; }
@@ -45,6 +46,8 @@ const ChevronRight = mkIcon('›');
 const Check = mkIcon('✓');
 const Loader2 = mkIcon('⟳');
 const WifiOff = mkIcon('⚠');
+const Download = mkIcon('⬇');
+const Settings = mkIcon('⚙');
 
 const CATEGORIAS = ['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'];
 const API = '/api';
@@ -161,6 +164,376 @@ function propagarGanadores(rondas) {
   return nuevasRondas;
 }
 
+// ---------- Fase de grupos (round-robin parcial: 2 partidos por pareja) ----------
+function generarGrupos(parejas) {
+  const n = parejas.length;
+  if (n % 4 !== 0 || n < 4) {
+    return { error: `La fase de grupos necesita una cantidad de parejas múltiplo de 4. Hay ${n} inscriptas.` };
+  }
+  const mezcladas = shuffle(parejas);
+  const grupos = [];
+  for (let i = 0; i < mezcladas.length; i += 4) {
+    const [a, b, c, d] = mezcladas.slice(i, i + 4);
+    // Cruces fijos: A-B, C-D (ronda 1) y A-C, B-D (ronda 2). A-D y B-C no se juegan.
+    grupos.push({
+      id: `grupo-${i / 4}`,
+      nombre: `Grupo ${String.fromCharCode(65 + i / 4)}`,
+      integrantes: [a, b, c, d],
+      partidos: [
+        { id: `g${i / 4}-p0`, parejaA: a, parejaB: b, marcador: '', horario: '', cancha: '', gamesA: null, gamesB: null },
+        { id: `g${i / 4}-p1`, parejaA: c, parejaB: d, marcador: '', horario: '', cancha: '', gamesA: null, gamesB: null },
+        { id: `g${i / 4}-p2`, parejaA: a, parejaB: c, marcador: '', horario: '', cancha: '', gamesA: null, gamesB: null },
+        { id: `g${i / 4}-p3`, parejaA: b, parejaB: d, marcador: '', horario: '', cancha: '', gamesA: null, gamesB: null },
+      ],
+    });
+  }
+  return { grupos };
+}
+
+// Calcula la tabla de posiciones de un grupo a partir de sus partidos jugados
+function calcularTablaGrupo(grupo) {
+  const stats = {};
+  grupo.integrantes.forEach(p => {
+    stats[p.id] = { pareja: p, victorias: 0, gamesGanados: 0, gamesPerdidos: 0, jugados: 0 };
+  });
+  grupo.partidos.forEach(partido => {
+    const { parejaA, parejaB, gamesA, gamesB } = partido;
+    if (gamesA == null || gamesB == null || !parejaA || !parejaB) return;
+    stats[parejaA.id].jugados++;
+    stats[parejaB.id].jugados++;
+    stats[parejaA.id].gamesGanados += gamesA;
+    stats[parejaA.id].gamesPerdidos += gamesB;
+    stats[parejaB.id].gamesGanados += gamesB;
+    stats[parejaB.id].gamesPerdidos += gamesA;
+    if (gamesA > gamesB) stats[parejaA.id].victorias++;
+    else if (gamesB > gamesA) stats[parejaB.id].victorias++;
+  });
+  const tabla = Object.values(stats).map(s => ({
+    ...s,
+    diferencia: s.gamesGanados - s.gamesPerdidos,
+  }));
+  tabla.sort((x, y) => {
+    if (y.victorias !== x.victorias) return y.victorias - x.victorias;
+    if (y.diferencia !== x.diferencia) return y.diferencia - x.diferencia;
+    return y.gamesGanados - x.gamesGanados;
+  });
+  return tabla;
+}
+
+function grupoCompleto(grupo) {
+  return grupo.partidos.every(p => p.gamesA != null && p.gamesB != null);
+}
+
+// Arma el cuadro eliminatorio a partir de los clasificados (1° y 2° de cada grupo)
+function generarCuadroDesdeGrupos(grupos) {
+  const clasificados = [];
+  grupos.forEach(grupo => {
+    const tabla = calcularTablaGrupo(grupo);
+    if (tabla[0]) clasificados.push(tabla[0].pareja);
+    if (tabla[1]) clasificados.push(tabla[1].pareja);
+  });
+  // Mezclamos pero evitando que dos clasificados del mismo grupo se enfrenten en la primera ronda si es posible
+  const primeros = [];
+  const segundos = [];
+  grupos.forEach(grupo => {
+    const tabla = calcularTablaGrupo(grupo);
+    if (tabla[0]) primeros.push(tabla[0].pareja);
+    if (tabla[1]) segundos.push(tabla[1].pareja);
+  });
+  const primerosOrden = shuffle(primeros);
+  const segundosOrden = shuffle(segundos);
+  const ordenFinal = [];
+  for (let i = 0; i < primerosOrden.length; i++) {
+    ordenFinal.push(primerosOrden[i]);
+    // Emparejamos cada primero con un segundo de otro grupo cuando sea posible
+    const segundoDeOtroGrupo = segundosOrden.find(s => {
+      const grupoDelPrimero = grupos.find(g => g.integrantes.some(int => int.id === primerosOrden[i].id));
+      return !grupoDelPrimero.integrantes.some(int => int.id === s.id);
+    });
+    if (segundoDeOtroGrupo) {
+      ordenFinal.push(segundoDeOtroGrupo);
+      segundosOrden.splice(segundosOrden.indexOf(segundoDeOtroGrupo), 1);
+    } else if (segundosOrden.length) {
+      ordenFinal.push(segundosOrden.shift());
+    }
+  }
+  while (segundosOrden.length) ordenFinal.push(segundosOrden.shift());
+  return generarCuadro(ordenFinal);
+}
+
+
+function descargarPdfCuadro(categoria, cuadro) {
+  if (!window.jspdf) {
+    alert('No se pudo cargar el generador de PDF. Probá de nuevo en unos segundos.');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const marginX = 15;
+  let y = 18;
+
+  const fecha = new Date().toLocaleDateString('es-AR');
+
+  function encabezado() {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text('CUADRO DE PADEL', marginX, y);
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Categoría: ${categoria}`, marginX, y + 7);
+    doc.text(`Fecha: ${fecha}`, pageWidth - marginX, y + 7, { align: 'right' });
+    y += 14;
+    doc.setDrawColor(180);
+    doc.line(marginX, y, pageWidth - marginX, y);
+    y += 8;
+  }
+
+  function asegurarEspacio(alturaNecesaria) {
+    const pageHeight = doc.internal.pageSize.getHeight();
+    if (y + alturaNecesaria > pageHeight - 15) {
+      doc.addPage();
+      y = 18;
+    }
+  }
+
+  encabezado();
+
+  cuadro.forEach((ronda) => {
+    asegurarEspacio(14);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.setTextColor(20, 60, 30);
+    doc.text(ronda.nombre.toUpperCase(), marginX, y);
+    doc.setTextColor(0, 0, 0);
+    y += 7;
+
+    ronda.partidos.forEach((partido, idx) => {
+      asegurarEspacio(16);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+
+      const nombreA = partido.parejaA ? nombrePareja(partido.parejaA) : '— por definir —';
+      const nombreB = partido.parejaB ? nombrePareja(partido.parejaB) : '— por definir —';
+      const esGanadorA = partido.ganador && partido.parejaA && partido.ganador.id === partido.parejaA.id;
+      const esGanadorB = partido.ganador && partido.parejaB && partido.ganador.id === partido.parejaB.id;
+
+      let infoLinea = `Partido ${idx + 1}`;
+      if (partido.horario) infoLinea += `  ·  Horario: ${partido.horario}`;
+      if (partido.cancha) infoLinea += `  ·  Cancha: ${partido.cancha}`;
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(9);
+      doc.setTextColor(100);
+      doc.text(infoLinea, marginX, y);
+      doc.setTextColor(0, 0, 0);
+      y += 5.5;
+
+      doc.setFont('helvetica', esGanadorA ? 'bold' : 'normal');
+      doc.setFontSize(10.5);
+      doc.text(`${nombreA}`, marginX + 2, y);
+      y += 5.5;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(140);
+      doc.text('vs', marginX + 2, y);
+      doc.setTextColor(0, 0, 0);
+      y += 5.5;
+      doc.setFont('helvetica', esGanadorB ? 'bold' : 'normal');
+      doc.setFontSize(10.5);
+      doc.text(`${nombreB}`, marginX + 2, y);
+      y += 5;
+
+      if (partido.marcador) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(60, 110, 60);
+        doc.text(`Resultado: ${partido.marcador}`, marginX + 2, y);
+        doc.setTextColor(0, 0, 0);
+        y += 5;
+      }
+      y += 3;
+      doc.setDrawColor(225);
+      doc.line(marginX, y - 1, pageWidth - marginX, y - 1);
+    });
+    y += 4;
+  });
+
+  doc.save(`cuadro-${categoria}-${fecha.replace(/\//g, '-')}.pdf`);
+}
+
+function descargarPdfParticipantes(categoria, parejas) {
+  if (!window.jspdf) {
+    alert('No se pudo cargar el generador de PDF. Probá de nuevo en unos segundos.');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const marginX = 15;
+  const tableRight = pageWidth - marginX;
+  let y = 18;
+  const fecha = new Date().toLocaleDateString('es-AR');
+
+  // Columnas: # | Pareja | Horario | Cancha
+  const colNum = marginX;
+  const colPareja = marginX + 10;
+  const colHorario = pageWidth - marginX - 55;
+  const colCancha = pageWidth - marginX - 28;
+
+  function dibujarEncabezado() {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text('LISTA DE INSCRIPTOS', marginX, y);
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Categoría: ${categoria}`, marginX, y + 7);
+    doc.text(`Fecha: ${fecha}`, pageWidth - marginX, y + 7, { align: 'right' });
+    y += 14;
+    doc.setDrawColor(180);
+    doc.line(marginX, y, tableRight, y);
+    y += 9;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.text('#', colNum, y);
+    doc.text('Pareja', colPareja, y);
+    doc.text('Horario', colHorario, y);
+    doc.text('Cancha', colCancha, y);
+    y += 2;
+    doc.setDrawColor(120);
+    doc.line(marginX, y, tableRight, y);
+    // líneas verticales separando columnas
+    doc.setDrawColor(200);
+    doc.line(colHorario - 4, y, colHorario - 4, y);
+    y += 6;
+  }
+
+  dibujarEncabezado();
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  parejas.forEach((p, idx) => {
+    const pageHeight = doc.internal.pageSize.getHeight();
+    if (y > pageHeight - 20) {
+      doc.addPage();
+      y = 18;
+      dibujarEncabezado();
+    }
+    const nombre = p.nombre1 + (p.nombre2 ? ` / ${p.nombre2}` : '');
+    const filaAlto = 8;
+
+    doc.setFont('helvetica', 'normal');
+    doc.text(String(idx + 1), colNum, y);
+    doc.text(nombre, colPareja, y);
+    if (p.horario) doc.text(p.horario, colHorario, y);
+
+    // Espacio en blanco para anotar cancha(s) a mano, con línea para escribir
+    doc.setDrawColor(170);
+    doc.line(colCancha, y + 1.5, tableRight, y + 1.5);
+
+    // línea divisoria horizontal entre filas
+    doc.setDrawColor(225);
+    doc.line(marginX, y + filaAlto - 4.5, tableRight, y + filaAlto - 4.5);
+
+    y += filaAlto;
+  });
+
+  // líneas verticales que separan las columnas en toda la tabla (se dibujan al final, una vez conocido el alto real de la última página)
+  doc.setDrawColor(200);
+  doc.line(colHorario - 4, 18 + 14 + 9 - 6, colHorario - 4, y);
+  doc.line(colCancha - 4, 18 + 14 + 9 - 6, colCancha - 4, y);
+
+  doc.setFontSize(8.5);
+  doc.setTextColor(130);
+  doc.text('Cancha: espacio para anotar a mano (una pareja puede tener más de una cancha asignada si juega varios partidos).', marginX, y + 6);
+
+  doc.save(`inscriptos-${categoria}-${fecha.replace(/\//g, '-')}.pdf`);
+}
+
+function descargarPdfGrupos(categoria, grupos) {
+  if (!window.jspdf) {
+    alert('No se pudo cargar el generador de PDF. Probá de nuevo en unos segundos.');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const marginX = 15;
+  let y = 18;
+  const fecha = new Date().toLocaleDateString('es-AR');
+
+  function asegurarEspacio(altura) {
+    const pageHeight = doc.internal.pageSize.getHeight();
+    if (y + altura > pageHeight - 15) {
+      doc.addPage();
+      y = 18;
+    }
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.text('FASE DE GRUPOS', marginX, y);
+  doc.setFontSize(11);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Categoría: ${categoria}`, marginX, y + 7);
+  doc.text(`Fecha: ${fecha}`, pageWidth - marginX, y + 7, { align: 'right' });
+  y += 14;
+  doc.setDrawColor(180);
+  doc.line(marginX, y, pageWidth - marginX, y);
+  y += 8;
+
+  grupos.forEach((grupo) => {
+    asegurarEspacio(20);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.setTextColor(20, 60, 30);
+    doc.text(grupo.nombre.toUpperCase(), marginX, y);
+    doc.setTextColor(0, 0, 0);
+    y += 7;
+
+    grupo.partidos.forEach((partido, idx) => {
+      asegurarEspacio(14);
+      const nombreA = nombrePareja(partido.parejaA);
+      const nombreB = nombrePareja(partido.parejaB);
+      let infoLinea = `Partido ${idx + 1}`;
+      if (partido.horario) infoLinea += `  ·  Horario: ${partido.horario}`;
+      if (partido.cancha) infoLinea += `  ·  Cancha: ${partido.cancha}`;
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(9);
+      doc.setTextColor(100);
+      doc.text(infoLinea, marginX, y);
+      doc.setTextColor(0, 0, 0);
+      y += 5.5;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10.5);
+      doc.text(nombreA, marginX + 2, y);
+      y += 5.5;
+      doc.setFontSize(8.5);
+      doc.setTextColor(140);
+      doc.text('vs', marginX + 2, y);
+      doc.setTextColor(0, 0, 0);
+      y += 5.5;
+      doc.setFontSize(10.5);
+      doc.text(nombreB, marginX + 2, y);
+      y += 5;
+      if (partido.gamesA != null && partido.gamesB != null) {
+        doc.setFontSize(9);
+        doc.setTextColor(60, 110, 60);
+        doc.text(`Resultado: ${partido.gamesA} - ${partido.gamesB}`, marginX + 2, y);
+        doc.setTextColor(0, 0, 0);
+        y += 5;
+      }
+      y += 2;
+      doc.setDrawColor(225);
+      doc.line(marginX, y - 1, pageWidth - marginX, y - 1);
+      y += 1;
+    });
+    y += 5;
+  });
+
+  doc.save(`grupos-${categoria}-${fecha.replace(/\//g, '-')}.pdf`);
+}
+
 function nombrePareja(p) {
   if (!p) return null;
   return p.nombre1 + (p.nombre2 ? ` / ${p.nombre2}` : '');
@@ -197,6 +570,8 @@ function TorneoPadel() {
   const [errorConexion, setErrorConexion] = useState(false);
   const [modalAscenso, setModalAscenso] = useState(null);
   const [toast, setToast] = useState(null);
+  const [cantidadCanchas, setCantidadCanchas] = useState(1);
+  const [modalConfig, setModalConfig] = useState(false);
 
   const [jugador1, setJugador1] = useState('');
   const [jugador2, setJugador2] = useState('');
@@ -214,10 +589,31 @@ function TorneoPadel() {
     }
   }, []);
 
+  const cargarConfig = useCallback(async () => {
+    try {
+      const data = await apiGet('/config');
+      setCantidadCanchas(data.cantidadCanchas || 1);
+    } catch (e) { /* si falla, queda el valor por defecto */ }
+  }, []);
+
+  async function guardarCantidadCanchas(n) {
+    try {
+      const data = await apiPut('/config', { cantidadCanchas: n });
+      setCantidadCanchas(data.cantidadCanchas);
+      mostrarToast(`Configurado: ${data.cantidadCanchas} cancha(s)`);
+    } catch (e) { mostrarToast('No se pudo guardar la configuración.'); }
+  }
+
   const cargarCuadro = useCallback(async (categoria) => {
     try {
       const data = await apiGet(`/cuadros/${categoria}`);
-      setCuadrosCache(prev => ({ ...prev, [categoria]: data.rondas || [] }));
+      // Compatibilidad: data.rondas = formato viejo (eliminación directa sin grupos)
+      // data.tipo === 'grupos' = nuevo formato con fase de grupos
+      if (data.tipo === 'grupos') {
+        setCuadrosCache(prev => ({ ...prev, [categoria]: { tipo: 'grupos', grupos: data.grupos || [], cuadroFinal: data.cuadroFinal || [] } }));
+      } else {
+        setCuadrosCache(prev => ({ ...prev, [categoria]: { tipo: 'eliminacion', rondas: data.rondas || [] } }));
+      }
     } catch (e) {
       setErrorConexion(true);
     }
@@ -228,6 +624,7 @@ function TorneoPadel() {
       setCargando(true);
       await cargarParejas();
       await cargarCuadro(categoriaActiva);
+      await cargarConfig();
       setCargando(false);
     })();
   }, []);
@@ -247,7 +644,10 @@ function TorneoPadel() {
   }
 
   const parejas = parejasPorCategoria[categoriaActiva] || [];
-  const cuadro = cuadrosCache[categoriaActiva] || [];
+  const dataCategoria = cuadrosCache[categoriaActiva] || { tipo: 'eliminacion', rondas: [] };
+  const esGrupos = dataCategoria.tipo === 'grupos';
+  const cuadro = esGrupos ? (dataCategoria.cuadroFinal || []) : (dataCategoria.rondas || []);
+  const grupos = esGrupos ? (dataCategoria.grupos || []) : [];
 
   async function agregarPareja() {
     if (!jugador1.trim()) { mostrarToast('Falta el nombre del jugador/a 1'); return; }
@@ -270,22 +670,84 @@ function TorneoPadel() {
     if (parejas.length < 2) { mostrarToast('Necesitás al menos 2 parejas para sortear'); return; }
     const mezcladas = shuffle(parejas);
     const nuevasRondas = generarCuadro(mezcladas);
+    const payload = { tipo: 'eliminacion', rondas: nuevasRondas };
     try {
-      await apiPut(`/cuadros/${categoriaActiva}`, { rondas: nuevasRondas });
-      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: nuevasRondas }));
+      await apiPut(`/cuadros/${categoriaActiva}`, payload);
+      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: payload }));
       setVista('cuadro');
       mostrarToast('Cuadro sorteado');
     } catch (e) { mostrarToast('No se pudo guardar el cuadro.'); }
   }
 
-  async function actualizarPartido(rondaIdx, partidoIdx, cambios) {
-    const cuadroNuevo = cuadro.map((r, i) =>
-      i === rondaIdx ? { ...r, partidos: r.partidos.map((p, j) => (j === partidoIdx ? { ...p, ...cambios } : p)) } : r
-    );
-    const propagado = propagarGanadores(cuadroNuevo);
-    setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: propagado }));
+  async function sortearGrupos() {
+    if (parejas.length % 4 !== 0 || parejas.length < 4) {
+      const falta = 4 - (parejas.length % 4 || 4);
+      mostrarToast(`Para grupos necesitás múltiplo de 4. Hoy hay ${parejas.length} (agregá o quitá ${falta === 4 ? 0 : falta}).`);
+      return;
+    }
+    const resultado = generarGrupos(parejas);
+    if (resultado.error) { mostrarToast(resultado.error); return; }
+    const payload = { tipo: 'grupos', grupos: resultado.grupos, cuadroFinal: [] };
     try {
-      await apiPut(`/cuadros/${categoriaActiva}`, { rondas: propagado });
+      await apiPut(`/cuadros/${categoriaActiva}`, payload);
+      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: payload }));
+      setVista('cuadro');
+      mostrarToast('Grupos sorteados');
+    } catch (e) { mostrarToast('No se pudo guardar los grupos.'); }
+  }
+
+  async function actualizarPartidoGrupo(grupoIdx, partidoIdx, cambios) {
+    setCuadrosCache(prev => {
+      const actual = prev[categoriaActiva] || { tipo: 'grupos', grupos: [], cuadroFinal: [] };
+      const nuevosGrupos = actual.grupos.map((g, i) =>
+        i === grupoIdx ? { ...g, partidos: g.partidos.map((p, j) => (j === partidoIdx ? { ...p, ...cambios } : p)) } : g
+      );
+      return { ...prev, [categoriaActiva]: { ...actual, grupos: nuevosGrupos } };
+    });
+    try {
+      const fresco = await apiGet(`/cuadros/${categoriaActiva}`);
+      const base = fresco.tipo === 'grupos' ? fresco : { tipo: 'grupos', grupos: [], cuadroFinal: [] };
+      const nuevosGrupos = base.grupos.map((g, i) =>
+        i === grupoIdx ? { ...g, partidos: g.partidos.map((p, j) => (j === partidoIdx ? { ...p, ...cambios } : p)) } : g
+      );
+      const payload = { tipo: 'grupos', grupos: nuevosGrupos, cuadroFinal: base.cuadroFinal || [] };
+      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: payload }));
+      await apiPut(`/cuadros/${categoriaActiva}`, payload);
+    } catch (e) { mostrarToast('No se pudo guardar el resultado.'); }
+  }
+
+  async function armarCuadroFinalDesdeGrupos() {
+    const todosCompletos = grupos.every(grupoCompleto);
+    if (!todosCompletos) { mostrarToast('Todavía hay partidos de grupos sin resultado.'); return; }
+    const cuadroFinal = generarCuadroDesdeGrupos(grupos);
+    const payload = { tipo: 'grupos', grupos, cuadroFinal };
+    try {
+      await apiPut(`/cuadros/${categoriaActiva}`, payload);
+      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: payload }));
+      mostrarToast('Cuadro de clasificados armado');
+    } catch (e) { mostrarToast('No se pudo armar el cuadro.'); }
+  }
+
+  async function actualizarPartido(rondaIdx, partidoIdx, cambios) {
+    // Aplicamos el cambio optimista en pantalla de inmediato para que se sienta instantáneo
+    setCuadrosCache(prev => {
+      const actual = prev[categoriaActiva] || { tipo: 'eliminacion', rondas: [] };
+      const cuadroOptimista = actual.rondas.map((r, i) =>
+        i === rondaIdx ? { ...r, partidos: r.partidos.map((p, j) => (j === partidoIdx ? { ...p, ...cambios } : p)) } : r
+      );
+      return { ...prev, [categoriaActiva]: { tipo: 'eliminacion', rondas: propagarGanadores(cuadroOptimista) } };
+    });
+    try {
+      // Traemos el cuadro más fresco posible del servidor para no pisar otro cambio reciente
+      const fresco = await apiGet(`/cuadros/${categoriaActiva}`);
+      const cuadroBase = fresco.rondas && fresco.rondas.length ? fresco.rondas : (cuadrosCache[categoriaActiva]?.rondas || []);
+      const cuadroNuevo = cuadroBase.map((r, i) =>
+        i === rondaIdx ? { ...r, partidos: r.partidos.map((p, j) => (j === partidoIdx ? { ...p, ...cambios } : p)) } : r
+      );
+      const propagado = propagarGanadores(cuadroNuevo);
+      const payload = { tipo: 'eliminacion', rondas: propagado };
+      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: payload }));
+      await apiPut(`/cuadros/${categoriaActiva}`, payload);
     } catch (e) { mostrarToast('No se pudo guardar el cambio.'); }
   }
 
@@ -293,7 +755,7 @@ function TorneoPadel() {
     try {
       await apiPost(`/parejas/${pareja.id}/ascender`, { categoriaDestino });
       await cargarParejas();
-      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: [] }));
+      setCuadrosCache(prev => ({ ...prev, [categoriaActiva]: { tipo: 'eliminacion', rondas: [] } }));
       setModalAscenso(null);
       mostrarToast(`Ascendida a ${categoriaDestino}`);
     } catch (e) { mostrarToast('No se pudo ascender la pareja.'); }
@@ -312,7 +774,12 @@ function TorneoPadel() {
               {errorConexion ? 'Sin conexión al servidor' : 'Torneo en vivo'}
             </span>
           </div>
-          <h1 className="font-display text-2xl leading-none tracking-tight">CUADRO&nbsp;DE&nbsp;PADEL</h1>
+          <div className="flex items-center justify-between">
+            <h1 className="font-display text-2xl leading-none tracking-tight">CUADRO&nbsp;DE&nbsp;PADEL</h1>
+            <button onClick={() => setModalConfig(true)} title="Configurar canchas del club" className="flex items-center gap-1.5 text-[10px] font-mono text-[#8FA88F] hover:text-[#C8FF4D] uppercase border border-[#2A3B2E] rounded-full px-2.5 py-1">
+              <Settings size={12} /> {cantidadCanchas} {cantidadCanchas === 1 ? 'cancha' : 'canchas'}
+            </button>
+          </div>
         </div>
         <div className="flex overflow-x-auto px-4 pb-3 gap-1.5">
           {CATEGORIAS.map(cat => {
@@ -329,7 +796,7 @@ function TorneoPadel() {
       </header>
 
       <div className="flex px-4 pt-3 gap-4 border-b border-[#2A3B2E]">
-        {[{ id: 'participantes', label: 'Participantes', icon: Users }, { id: 'cuadro', label: 'Cuadro', icon: Trophy }].map(t => (
+        {[{ id: 'participantes', label: 'Participantes', icon: Users }, { id: 'cuadro', label: esGrupos ? 'Grupos' : 'Cuadro', icon: Trophy }].map(t => (
           <button key={t.id} onClick={() => setVista(t.id)}
             className={`flex items-center gap-1.5 pb-2.5 text-sm font-medium border-b-2 transition-colors ${vista === t.id ? 'border-[#C8FF4D] text-[#E8E2D4]' : 'border-transparent text-[#5C6E5E]'}`}>
             <t.icon size={14} />{t.label}
@@ -345,19 +812,31 @@ function TorneoPadel() {
             jugador2={jugador2} setJugador2={setJugador2}
             horarioPref={horarioPref} setHorarioPref={setHorarioPref}
             agregarPareja={agregarPareja} eliminarPareja={eliminarPareja}
-            sortearCuadro={sortearCuadro} categoriaSuperior={categoriaSuperior}
-            abrirAscenso={(p) => setModalAscenso(p)} tieneCuadro={cuadro.length > 0}
+            sortearCuadro={sortearCuadro} sortearGrupos={sortearGrupos} categoriaSuperior={categoriaSuperior}
+            abrirAscenso={(p) => setModalAscenso(p)} tieneCuadro={cuadro.length > 0 || grupos.length > 0}
           />
         )}
-        {vista === 'cuadro' && (
-          <CuadroView cuadro={cuadro} categoriaActiva={categoriaActiva}
+        {vista === 'cuadro' && !esGrupos && (
+          <CuadroView cuadro={cuadro} categoriaActiva={categoriaActiva} cantidadCanchas={cantidadCanchas}
             actualizarPartido={actualizarPartido} sortearCuadro={sortearCuadro} />
+        )}
+        {vista === 'cuadro' && esGrupos && (
+          <GruposView grupos={grupos} cuadroFinal={cuadro} categoriaActiva={categoriaActiva} cantidadCanchas={cantidadCanchas}
+            actualizarPartidoGrupo={actualizarPartidoGrupo}
+            armarCuadroFinalDesdeGrupos={armarCuadroFinalDesdeGrupos}
+            actualizarPartido={actualizarPartido} />
         )}
       </main>
 
       {modalAscenso && (
         <ModalAscenso pareja={modalAscenso} categoriaActual={categoriaActiva} categoriaSuperior={categoriaSuperior}
           onConfirmar={(destino) => ascenderPareja(modalAscenso, destino)} onCerrar={() => setModalAscenso(null)} />
+      )}
+
+      {modalConfig && (
+        <ModalConfigCanchas cantidadActual={cantidadCanchas}
+          onConfirmar={(n) => { guardarCantidadCanchas(n); setModalConfig(false); }}
+          onCerrar={() => setModalConfig(false)} />
       )}
 
       {toast && (
@@ -369,7 +848,8 @@ function TorneoPadel() {
   );
 }
 
-function ParticipantesView({ categoriaActiva, parejas, jugador1, setJugador1, jugador2, setJugador2, horarioPref, setHorarioPref, agregarPareja, eliminarPareja, sortearCuadro, categoriaSuperior, abrirAscenso, tieneCuadro }) {
+function ParticipantesView({ categoriaActiva, parejas, jugador1, setJugador1, jugador2, setJugador2, horarioPref, setHorarioPref, agregarPareja, eliminarPareja, sortearCuadro, sortearGrupos, categoriaSuperior, abrirAscenso, tieneCuadro }) {
+  const multiploDeCuatro = parejas.length >= 4 && parejas.length % 4 === 0;
   return (
     <div className="space-y-5">
       <div className="bg-[#152319] border border-[#2A3B2E] rounded-2xl p-4">
@@ -390,7 +870,14 @@ function ParticipantesView({ categoriaActiva, parejas, jugador1, setJugador1, ju
       <div>
         <div className="flex items-center justify-between mb-2.5">
           <span className="text-xs font-mono tracking-widest text-[#8FA88F] uppercase">Anotados ({parejas.length})</span>
-          {tieneCuadro && <span className="text-[10px] font-mono text-[#C8FF4D]/70 uppercase">Cuadro sorteado</span>}
+          <div className="flex items-center gap-3">
+            {tieneCuadro && <span className="text-[10px] font-mono text-[#C8FF4D]/70 uppercase">Sorteado</span>}
+            {parejas.length > 0 && (
+              <button onClick={() => descargarPdfParticipantes(categoriaActiva, parejas)} title="Descargar lista en PDF" className="flex items-center gap-1 text-[10px] font-mono text-[#8FA88F] hover:text-[#C8FF4D] uppercase">
+                <Download size={12} /> PDF
+              </button>
+            )}
+          </div>
         </div>
         {parejas.length === 0 ? (
           <div className="text-center py-10 text-[#5C6E5E] text-sm border border-dashed border-[#2A3B2E] rounded-2xl">
@@ -418,15 +905,26 @@ function ParticipantesView({ categoriaActiva, parejas, jugador1, setJugador1, ju
       </div>
 
       {parejas.length >= 2 && (
-        <button onClick={sortearCuadro} className="w-full flex items-center justify-center gap-2 bg-[#152319] border border-[#C8FF4D]/40 text-[#C8FF4D] font-semibold rounded-xl py-3 text-sm active:scale-[0.98] transition-transform">
-          <Shuffle size={16} /> {tieneCuadro ? 'Volver a sortear cuadro' : 'Sortear cuadro'}
-        </button>
+        <div className="space-y-2">
+          <div className="text-xs font-mono tracking-widest text-[#8FA88F] uppercase">{tieneCuadro ? 'Volver a sortear' : 'Elegir formato y sortear'}</div>
+          <button onClick={sortearCuadro} className="w-full flex items-center justify-center gap-2 bg-[#152319] border border-[#C8FF4D]/40 text-[#C8FF4D] font-semibold rounded-xl py-3 text-sm active:scale-[0.98] transition-transform">
+            <Shuffle size={16} /> Eliminación directa
+          </button>
+          <button onClick={sortearGrupos} className="w-full flex items-center justify-center gap-2 bg-[#152319] border border-[#C8FF4D]/40 text-[#C8FF4D] font-semibold rounded-xl py-3 text-sm active:scale-[0.98] transition-transform">
+            <Users size={16} /> Fase de grupos (4 en 4)
+          </button>
+          {!multiploDeCuatro && (
+            <div className="text-[11px] text-[#8FA88F] text-center px-2">
+              Fase de grupos necesita múltiplo de 4 parejas. Hoy hay {parejas.length}.
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-function CuadroView({ cuadro, categoriaActiva, actualizarPartido, sortearCuadro }) {
+function CuadroView({ cuadro, categoriaActiva, cantidadCanchas, actualizarPartido, sortearCuadro }) {
   if (!cuadro || cuadro.length === 0) {
     return (
       <div className="text-center py-16 text-[#5C6E5E] text-sm">
@@ -438,6 +936,9 @@ function CuadroView({ cuadro, categoriaActiva, actualizarPartido, sortearCuadro 
   const campeon = cuadro[cuadro.length - 1]?.partidos?.[0]?.ganador;
   return (
     <div className="space-y-6 overflow-x-auto pb-4">
+      <button onClick={() => descargarPdfCuadro(categoriaActiva, cuadro)} className="w-full flex items-center justify-center gap-2 bg-[#152319] border border-[#C8FF4D]/40 text-[#C8FF4D] font-semibold rounded-xl py-2.5 text-sm active:scale-[0.98] transition-transform">
+        <Download size={16} /> Descargar cuadro en PDF
+      </button>
       {campeon && (
         <div className="flex items-center gap-3 bg-gradient-to-r from-[#C8FF4D]/15 to-transparent border border-[#C8FF4D]/30 rounded-2xl px-4 py-3.5">
           <Trophy size={22} className="text-[#C8FF4D] shrink-0" />
@@ -454,7 +955,7 @@ function CuadroView({ cuadro, categoriaActiva, actualizarPartido, sortearCuadro 
           </div>
           <div className="space-y-2.5">
             {ronda.partidos.map((partido, pIdx) => (
-              <PartidoCard key={partido.id} partido={partido} onChange={(cambios) => actualizarPartido(rIdx, pIdx, cambios)} />
+              <PartidoCard key={partido.id} partido={partido} cantidadCanchas={cantidadCanchas} onChange={(cambios) => actualizarPartido(rIdx, pIdx, cambios)} />
             ))}
           </div>
         </div>
@@ -466,7 +967,181 @@ function CuadroView({ cuadro, categoriaActiva, actualizarPartido, sortearCuadro 
   );
 }
 
-function PartidoCard({ partido, onChange }) {
+function GruposView({ grupos, cuadroFinal, categoriaActiva, cantidadCanchas, actualizarPartidoGrupo, armarCuadroFinalDesdeGrupos, actualizarPartido }) {
+  if (!grupos || grupos.length === 0) {
+    return (
+      <div className="text-center py-16 text-[#5C6E5E] text-sm">
+        <Users className="mx-auto mb-3 text-[#2A3B2E]" size={32} />
+        Todavía no sorteaste los grupos de {categoriaActiva}.
+      </div>
+    );
+  }
+
+  // Si ya se armó el cuadro de clasificados, mostramos eso debajo de los grupos
+  const todosCompletos = grupos.every(grupoCompleto);
+  const hayClasificados = cuadroFinal && cuadroFinal.length > 0;
+  const campeon = hayClasificados ? cuadroFinal[cuadroFinal.length - 1]?.partidos?.[0]?.ganador : null;
+
+  return (
+    <div className="space-y-6 overflow-x-auto pb-4">
+      <button onClick={() => descargarPdfGrupos(categoriaActiva, grupos)} className="w-full flex items-center justify-center gap-2 bg-[#152319] border border-[#C8FF4D]/40 text-[#C8FF4D] font-semibold rounded-xl py-2.5 text-sm active:scale-[0.98] transition-transform">
+        <Download size={16} /> Descargar partidos de grupos en PDF
+      </button>
+
+      {grupos.map((grupo, gIdx) => {
+        const tabla = calcularTablaGrupo(grupo);
+        return (
+          <div key={grupo.id}>
+            <div className="text-xs font-mono tracking-widest text-[#8FA88F] uppercase mb-2.5 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#C8FF4D]" />{grupo.nombre}
+            </div>
+
+            {/* Tabla de posiciones */}
+            <div className="bg-[#152319] border border-[#2A3B2E] rounded-xl overflow-hidden mb-2.5">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-[#5C6E5E] border-b border-[#2A3B2E]">
+                    <th className="text-left py-2 px-3 font-mono">Pareja</th>
+                    <th className="text-center py-2 px-2 font-mono">PJ</th>
+                    <th className="text-center py-2 px-2 font-mono">PG</th>
+                    <th className="text-center py-2 px-2 font-mono">DIF</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tabla.map((fila, idx) => (
+                    <tr key={fila.pareja.id} className={idx < 2 ? 'text-[#C8FF4D]' : 'text-[#E8E2D4]'}>
+                      <td className="py-2 px-3 truncate max-w-[140px]">{nombrePareja(fila.pareja)}</td>
+                      <td className="text-center py-2 px-2 font-mono">{fila.jugados}</td>
+                      <td className="text-center py-2 px-2 font-mono">{fila.victorias}</td>
+                      <td className="text-center py-2 px-2 font-mono">{fila.diferencia > 0 ? '+' : ''}{fila.diferencia}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Partidos del grupo */}
+            <div className="space-y-2.5">
+              {grupo.partidos.map((partido, pIdx) => (
+                <PartidoGrupoCard key={partido.id} partido={partido} cantidadCanchas={cantidadCanchas} onChange={(cambios) => actualizarPartidoGrupo(gIdx, pIdx, cambios)} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
+      {!hayClasificados && (
+        <button onClick={armarCuadroFinalDesdeGrupos} disabled={!todosCompletos}
+          className={`w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold transition-transform ${todosCompletos ? 'bg-[#C8FF4D] text-[#0F1A14] active:scale-[0.98]' : 'bg-[#152319] border border-[#2A3B2E] text-[#5C6E5E]'}`}>
+          <Trophy size={16} /> {todosCompletos ? 'Armar cuadro de clasificados' : 'Completá todos los partidos de grupos'}
+        </button>
+      )}
+
+      {hayClasificados && (
+        <div className="pt-2 space-y-6">
+          <div className="text-xs font-mono tracking-widest text-[#C8FF4D] uppercase mb-2.5 flex items-center gap-2 border-t border-[#2A3B2E] pt-5">
+            <Trophy size={14} /> Cuadro de clasificados
+          </div>
+          <button onClick={() => descargarPdfCuadro(categoriaActiva, cuadroFinal)} className="w-full flex items-center justify-center gap-2 bg-[#152319] border border-[#C8FF4D]/40 text-[#C8FF4D] font-semibold rounded-xl py-2.5 text-sm active:scale-[0.98] transition-transform">
+            <Download size={16} /> Descargar cuadro de clasificados en PDF
+          </button>
+          {campeon && (
+            <div className="flex items-center gap-3 bg-gradient-to-r from-[#C8FF4D]/15 to-transparent border border-[#C8FF4D]/30 rounded-2xl px-4 py-3.5">
+              <Trophy size={22} className="text-[#C8FF4D] shrink-0" />
+              <div>
+                <div className="text-[10px] font-mono tracking-widest text-[#C8FF4D]/80 uppercase">Campeón {categoriaActiva}</div>
+                <div className="font-semibold text-sm">{nombrePareja(campeon)}</div>
+              </div>
+            </div>
+          )}
+          {cuadroFinal.map((ronda, rIdx) => (
+            <div key={rIdx}>
+              <div className="text-xs font-mono tracking-widest text-[#8FA88F] uppercase mb-2.5 flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#C8FF4D]" />{ronda.nombre}
+              </div>
+              <div className="space-y-2.5">
+                {ronda.partidos.map((partido, pIdx) => (
+                  <PartidoCard key={partido.id} partido={partido} cantidadCanchas={cantidadCanchas} onChange={(cambios) => actualizarPartido(rIdx, pIdx, cambios)} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PartidoGrupoCard({ partido, cantidadCanchas, onChange }) {
+  const { parejaA, parejaB, horario, cancha, gamesA, gamesB } = partido;
+  const [editando, setEditando] = useState(false);
+  const [tmpA, setTmpA] = useState(gamesA != null ? String(gamesA) : '');
+  const [tmpB, setTmpB] = useState(gamesB != null ? String(gamesB) : '');
+  const opcionesCancha = Array.from({ length: cantidadCanchas || 1 }, (_, i) => i + 1);
+
+  function guardarResultado() {
+    const a = parseInt(tmpA, 10);
+    const b = parseInt(tmpB, 10);
+    if (Number.isNaN(a) || Number.isNaN(b)) return;
+    onChange({ gamesA: a, gamesB: b });
+    setEditando(false);
+  }
+
+  const hayResultado = gamesA != null && gamesB != null;
+  const ganoA = hayResultado && gamesA > gamesB;
+  const ganoB = hayResultado && gamesB > gamesA;
+
+  return (
+    <div className="bg-[#152319] border border-[#2A3B2E] rounded-xl overflow-hidden">
+      <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-1">
+        <input value={horario} onChange={e => onChange({ horario: e.target.value })} placeholder="Horario"
+          className="bg-transparent text-[11px] font-mono text-[#8FA88F] placeholder:text-[#3D4F40] focus:outline-none focus:text-[#E8E2D4] w-20" />
+        <span className="text-[#2A3B2E]">·</span>
+        <select value={cancha || ''} onChange={e => onChange({ cancha: e.target.value })}
+          className="bg-transparent text-[11px] font-mono text-[#8FA88F] focus:outline-none focus:text-[#E8E2D4]">
+          <option value="" className="bg-[#152319]">Cancha</option>
+          {opcionesCancha.map(n => (
+            <option key={n} value={n} className="bg-[#152319]">Cancha {n}</option>
+          ))}
+        </select>
+      </div>
+      <div className="px-3.5 pb-3 space-y-1">
+        <div className={`flex items-center justify-between px-2.5 py-2 rounded-lg text-sm ${ganoA ? 'bg-[#C8FF4D]/15 text-[#C8FF4D] font-semibold' : 'text-[#E8E2D4]'}`}>
+          <span className="truncate">{nombrePareja(parejaA)}</span>
+          {hayResultado && <span className="font-mono">{gamesA}</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-px bg-[#2A3B2E]" /><span className="text-[9px] font-mono text-[#3D4F40]">VS</span><div className="flex-1 h-px bg-[#2A3B2E]" />
+        </div>
+        <div className={`flex items-center justify-between px-2.5 py-2 rounded-lg text-sm ${ganoB ? 'bg-[#C8FF4D]/15 text-[#C8FF4D] font-semibold' : 'text-[#E8E2D4]'}`}>
+          <span className="truncate">{nombrePareja(parejaB)}</span>
+          {hayResultado && <span className="font-mono">{gamesB}</span>}
+        </div>
+      </div>
+      <div className="border-t border-[#2A3B2E] px-3.5 py-2">
+        {editando ? (
+          <div className="flex items-center gap-2">
+            <input autoFocus type="number" value={tmpA} onChange={e => setTmpA(e.target.value)} placeholder="Games A"
+              className="w-16 bg-[#0F1A14] border border-[#2A3B2E] rounded-lg px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-[#C8FF4D]" />
+            <span className="text-[#5C6E5E] text-xs">-</span>
+            <input type="number" value={tmpB} onChange={e => setTmpB(e.target.value)} placeholder="Games B"
+              className="w-16 bg-[#0F1A14] border border-[#2A3B2E] rounded-lg px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-[#C8FF4D]" />
+            <button onClick={guardarResultado} className="bg-[#C8FF4D] text-[#0F1A14] rounded-lg px-3 py-1.5 text-xs font-semibold">
+              <Check size={14} />
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => setEditando(true)} className="text-[11px] font-mono text-[#5C6E5E] hover:text-[#8FA88F]">
+            {hayResultado ? `Resultado: ${gamesA} - ${gamesB}` : '+ Cargar resultado (games)'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function PartidoCard({ partido, cantidadCanchas, onChange }) {
   const { parejaA, parejaB, ganador, horario, cancha, marcador } = partido;
   const esByeA = parejaA && !parejaB;
   const esByeB = parejaB && !parejaA;
@@ -476,6 +1151,7 @@ function PartidoCard({ partido, onChange }) {
 
   function elegirGanador(p) { onChange({ ganador: p }); }
   const ganadorId = ganador ? ganador.id : null;
+  const opcionesCancha = Array.from({ length: cantidadCanchas || 1 }, (_, i) => i + 1);
 
   return (
     <div className="bg-[#152319] border border-[#2A3B2E] rounded-xl overflow-hidden">
@@ -483,8 +1159,13 @@ function PartidoCard({ partido, onChange }) {
         <input value={horario} onChange={e => onChange({ horario: e.target.value })} placeholder="Horario"
           className="bg-transparent text-[11px] font-mono text-[#8FA88F] placeholder:text-[#3D4F40] focus:outline-none focus:text-[#E8E2D4] w-20" />
         <span className="text-[#2A3B2E]">·</span>
-        <input value={cancha} onChange={e => onChange({ cancha: e.target.value })} placeholder="Cancha"
-          className="bg-transparent text-[11px] font-mono text-[#8FA88F] placeholder:text-[#3D4F40] focus:outline-none focus:text-[#E8E2D4] w-20" />
+        <select value={cancha || ''} onChange={e => onChange({ cancha: e.target.value })}
+          className="bg-transparent text-[11px] font-mono text-[#8FA88F] focus:outline-none focus:text-[#E8E2D4]">
+          <option value="" className="bg-[#152319]">Cancha</option>
+          {opcionesCancha.map(n => (
+            <option key={n} value={n} className="bg-[#152319]">Cancha {n}</option>
+          ))}
+        </select>
       </div>
       <div className="px-3.5 pb-3 space-y-1">
         <FilaPareja pareja={parejaA} esGanador={ganadorId === (parejaA && parejaA.id)} esBye={esByeA} puedeElegir={ambasDefinidas} onElegir={() => elegirGanador(parejaA)} />
@@ -544,6 +1225,38 @@ function ModalAscenso({ pareja, categoriaActual, categoriaSuperior, onConfirmar,
         <div className="flex gap-2">
           <button onClick={onCerrar} className="flex-1 border border-[#2A3B2E] text-[#8FA88F] rounded-xl py-2.5 text-sm font-medium">Cancelar</button>
           <button onClick={() => onConfirmar(categoriaSuperior)} className="flex-1 bg-[#C8FF4D] text-[#0F1A14] rounded-xl py-2.5 text-sm font-semibold">Confirmar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalConfigCanchas({ cantidadActual, onConfirmar, onCerrar }) {
+  const [seleccion, setSeleccion] = useState(cantidadActual);
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onCerrar}>
+      <div onClick={e => e.stopPropagation()} className="bg-[#152319] border border-[#2A3B2E] rounded-2xl p-5 w-full max-w-sm">
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Settings size={18} className="text-[#C8FF4D]" />
+            <span className="font-display text-sm">CANCHAS DEL CLUB</span>
+          </div>
+          <button onClick={onCerrar} className="text-[#5C6E5E]"><X size={18} /></button>
+        </div>
+        <p className="text-xs text-[#5C6E5E] mb-4">
+          Elegí cuántas canchas tiene el club. Esto define las opciones disponibles al asignar cancha a cada partido.
+        </p>
+        <div className="flex gap-2 mb-5">
+          {[1, 2, 3, 4, 5].map(n => (
+            <button key={n} onClick={() => setSeleccion(n)}
+              className={`flex-1 py-3 rounded-xl text-sm font-semibold border transition-colors ${seleccion === n ? 'bg-[#C8FF4D] text-[#0F1A14] border-[#C8FF4D]' : 'bg-[#0F1A14] text-[#8FA88F] border-[#2A3B2E]'}`}>
+              {n}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onCerrar} className="flex-1 border border-[#2A3B2E] text-[#8FA88F] rounded-xl py-2.5 text-sm font-medium">Cancelar</button>
+          <button onClick={() => onConfirmar(seleccion)} className="flex-1 bg-[#C8FF4D] text-[#0F1A14] rounded-xl py-2.5 text-sm font-semibold">Guardar</button>
         </div>
       </div>
     </div>
